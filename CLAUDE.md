@@ -48,6 +48,23 @@ The free Gantt visuals on AppSource don't meet the client's needs. The closest v
   - `src/gantt.ts` (`getTaskRectWidth`): Removed `lodashIsEmpty(task.Milestones)` guard so bars always render
   - `src/gantt.ts` (`addTooltipInfoForCollapsedTasks`): Tooltip now uses `milestone.start` (actual milestone date) instead of `task.start`
 
+### ✅ Per-Milestone Independent Color and Shape Formatting
+- **Implemented:** Each milestone column (PDR Date, CDR Date, FAI Date, etc.) now has fully independent color and shape settings in the Format pane. Changing PDR Date to red/diamond only affects PDR Date markers.
+- **Root cause of the previous bug:** Power BI's composite row identities are shared across all Grouping-role category columns. `withCategory(pdrCol, rowIndex)` and `withCategory(cdrCol, rowIndex)` produce identical selectors, so Power BI broadcasted any write to all milestone categories simultaneously.
+- **Fix approach:** Global (null-selector) properties with unique index-based names (`fill_0`…`fill_9`, `shapeType_0`…`shapeType_9`). Each milestone column gets its own independent slot in `dataView.metadata.objects.milestones`. No row identity involved — no cross-column contamination.
+- **Files changed:** `capabilities.json`, `src/settings/cards/milestonesCard.ts`, `src/gantt.ts`
+- **Key implementation details:**
+  - `capabilities.json`: Added `fill_0`…`fill_9` (fill/solid/color type) and `shapeType_0`…`shapeType_9` (text type) as declared properties on the `milestones` object
+  - `src/settings/cards/milestonesCard.ts` (`MilestoneContainerItem`): Now takes `milestoneIndex: number`; ColorPicker uses `name: fill_${milestoneIndex}`, ItemDropdown uses `name: shapeType_${milestoneIndex}`, both with `selector: null`
+  - `src/settings/cards/milestonesCard.ts` (`populateMilestones`): Passes array index to `MilestoneContainerItem` constructor
+  - `src/gantt.ts` (`createMilestones`): Reads `dataView.metadata.objects?.milestones?.[fill_${i}]` and `[shapeType_${i}]` for each milestone column; falls back to `persistSettings` state (for View mode) then color palette default
+
+### ✅ Milestone Markers Suppressed on Parent/Header Rows
+- **Problem:** Program-level parent rows (Air Canada 787, Lufthansa A350, etc.) were showing milestone markers even though they are header/grouping rows, not actual task rows.
+- **Root cause:** `addTaskToParentTask` in `src/gantt.ts` was creating the parent `Task` object with `Milestones: milestones || []`, inheriting the first child task's milestone data.
+- **Fix:** Changed to `Milestones: []` — parent rows are always created with an empty milestone list.
+- **Files changed:** `src/gantt.ts` (`addTaskToParentTask`, line ~1385)
+
 ## Planned Modifications (Priority Order)
 
 ### 1. Milestone Vertical Dotted Lines — Further Refinement (if needed)

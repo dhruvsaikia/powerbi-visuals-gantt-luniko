@@ -42,21 +42,21 @@ export class MilestoneContainerItem extends Card {
     public color: ColorPicker;
     public shape: ItemDropdown;
 
-    constructor(milestone: MilestoneDataPoint, localizationManager: ILocalizationManager, colorHelper: ColorHelper) {
+    constructor(milestone: MilestoneDataPoint, milestoneIndex: number, localizationManager: ILocalizationManager, colorHelper: ColorHelper) {
         super();
         this.color = new ColorPicker({
-            name: "fill",
+            name: `fill_${milestoneIndex}`,
             displayNameKey: localizationManager.getDisplayName("Visual_Color"),
             value: { value: milestone.color },
             visible: !colorHelper.isHighContrast,
-            selector: ColorHelper.normalizeSelector(milestone.identity.getSelector(), false),
+            selector: null,
         });
         this.shape = new ItemDropdown({
-            name: "shapeType",
+            name: `shapeType_${milestoneIndex}`,
             displayNameKey: localizationManager.getDisplayName("Visual_Shape"),
             items: shapesOptions,
             value: shapesOptions.find(el => el.value === milestone.shapeType),
-            selector: ColorHelper.normalizeSelector(milestone.identity.getSelector(), false),
+            selector: null,
         });
 
         this.slices = [this.color, this.shape];
@@ -130,7 +130,7 @@ export class MilestonesCardSettings extends CompositeCard implements ISetHighCon
             return;
         }
 
-        const milestoneGroups: Card[] = milestones.map(milestone => new MilestoneContainerItem(milestone, localizationManager, colorHelper));
+        const milestoneGroups: Card[] = milestones.map((milestone, index) => new MilestoneContainerItem(milestone, index, localizationManager, colorHelper));
         this.milestoneGroup.container.containerItems = [...milestoneGroups];
     }
 

@@ -930,35 +930,40 @@ export class Gantt implements IVisual {
 
         const shouldUseSettingsFromPersistProps: boolean = viewMode === powerbi.ViewMode.View || keepSettingsOnFiltering;
         const allShapes = [MilestoneShape.Circle, MilestoneShape.Square, MilestoneShape.Rhombus];
-        let shapeIndex = 0;
 
         // Find all category columns assigned to the Milestones role (one per milestone type)
         const milestoneCategories = dataView.categorical.categories.filter(c => c.source.roles && c.source.roles.Milestones);
 
+        // Fix for "all milestones change together":
+        // Use global (null-selector) properties with unique index-based names (fill_0, fill_1, …).
+        // Power BI writes each to dataView.metadata.objects.milestones.fill_i independently —
+        // no shared row identities, no cross-column contamination.
+        const globalMilestoneObjects = dataView.metadata?.objects?.milestones as Record<string, any> | undefined;
+
+        let milestoneIndex = 0;
         for (const category of milestoneCategories) {
             const columnName: string = category.source.displayName;
-
-            // In edit mode read from per-row objects at index 0; in view/persist mode read from settingsState
-            const milestoneObjects = shouldUseSettingsFromPersistProps
-                ? settingsState.getMilestoneSettings(columnName)
-                : category.objects?.[0];
 
             const selectionBuilder: ISelectionIdBuilder = host
                 .createSelectionIdBuilder()
                 .withCategory(category, 0);
 
-            // Determine shape: persisted → objects → auto-cycle
-            const savedShape = settingsState.getMilestoneSettings(columnName)?.milestones?.shapeType as (MilestoneShape | undefined);
-            const shape: MilestoneShape = milestoneObjects?.milestones?.shapeType
-                ? milestoneObjects.milestones.shapeType as MilestoneShape
-                : savedShape ?? allShapes[shapeIndex % allShapes.length];
-            shapeIndex++;
+            // Determine shape: global index-based property → persistSettings → auto-cycle
+            const globalShape = globalMilestoneObjects?.[`shapeType_${milestoneIndex}`] as (MilestoneShape | undefined);
+            const savedShape = shouldUseSettingsFromPersistProps
+                ? settingsState.getMilestoneSettings(columnName)?.milestones?.shapeType as (MilestoneShape | undefined)
+                : undefined;
+            const shape: MilestoneShape = globalShape ?? savedShape ?? allShapes[milestoneIndex % allShapes.length];
 
-            // Determine color: objects → settingsState → palette
-            const savedColor = (settingsState.getMilestoneSettings(columnName)?.milestones as any)?.fill?.solid?.color;
-            const color: string = milestoneObjects?.milestones?.fill
-                ? (milestoneObjects.milestones as any).fill.solid.color
-                : savedColor ?? host.colorPalette.getColor(columnName).value;
+            // Determine color: global index-based property → persistSettings → palette
+            const globalFill = globalMilestoneObjects?.[`fill_${milestoneIndex}`] as any;
+            const globalColor: string | undefined = globalFill?.solid?.color;
+            const savedColor = shouldUseSettingsFromPersistProps
+                ? (settingsState.getMilestoneSettings(columnName)?.milestones as any)?.fill?.solid?.color as (string | undefined)
+                : undefined;
+            const color: string = globalColor ?? savedColor ?? host.colorPalette.getColor(columnName).value;
+
+            milestoneIndex++;
 
             const milestoneDataPoint: MilestoneDataPoint = {
                 name: columnName,
@@ -1377,7 +1382,7 @@ export class Gantt implements IVisual {
                 wasDowngradeDurationUnit: null,
                 selected: null,
                 identity: selectionBuilder.createSelectionId(),
-                Milestones: milestones || [],
+                Milestones: [],
                 highlight: highlight !== null
             };
 

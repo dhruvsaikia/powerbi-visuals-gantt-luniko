@@ -526,11 +526,31 @@
                         }
                     }
                 },
+                "fill_0": { "type": { "fill": { "solid": { "color": true } } } },
+                "fill_1": { "type": { "fill": { "solid": { "color": true } } } },
+                "fill_2": { "type": { "fill": { "solid": { "color": true } } } },
+                "fill_3": { "type": { "fill": { "solid": { "color": true } } } },
+                "fill_4": { "type": { "fill": { "solid": { "color": true } } } },
+                "fill_5": { "type": { "fill": { "solid": { "color": true } } } },
+                "fill_6": { "type": { "fill": { "solid": { "color": true } } } },
+                "fill_7": { "type": { "fill": { "solid": { "color": true } } } },
+                "fill_8": { "type": { "fill": { "solid": { "color": true } } } },
+                "fill_9": { "type": { "fill": { "solid": { "color": true } } } },
                 "shapeType": {
                     "type": {
                         "text": true
                     }
                 },
+                "shapeType_0": { "type": { "text": true } },
+                "shapeType_1": { "type": { "text": true } },
+                "shapeType_2": { "type": { "text": true } },
+                "shapeType_3": { "type": { "text": true } },
+                "shapeType_4": { "type": { "text": true } },
+                "shapeType_5": { "type": { "text": true } },
+                "shapeType_6": { "type": { "text": true } },
+                "shapeType_7": { "type": { "text": true } },
+                "shapeType_8": { "type": { "text": true } },
+                "shapeType_9": { "type": { "text": true } },
                 "persistSettings": {
                     "type": {
                         "text": true
