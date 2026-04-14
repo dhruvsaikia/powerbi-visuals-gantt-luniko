@@ -68,7 +68,7 @@ export class MilestoneContainerItem extends Card {
 export class LineContainerItem extends Card {
     public showLines = new ToggleSwitch({
         name: "showLines",
-        displayNameKey: "Visual_Show",
+        displayNameKey: "Visual_Milestones_ShowLines",
         value: true
     });
 

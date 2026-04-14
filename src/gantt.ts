@@ -3831,9 +3831,35 @@ export class Gantt implements IVisual {
                 .exit()
                 .remove();
         } else {
-            this.chartGroup
-                .selectAll(Gantt.ChartLine.selectorName)
-                .remove();
+            // showLines is off — remove milestone lines but keep Today line if enabled
+            if (shouldRenderTodayLine) {
+                const todayLine = line.filter((l: Line) => l.x1 === Gantt.TimeScale(timestamp));
+                const chartLineSelection = this.chartGroup
+                    .selectAll<SVGLineElement, Line>(Gantt.ChartLine.selectorName)
+                    .data(todayLine);
+
+                const chartLineSelectionMerged = chartLineSelection
+                    .enter()
+                    .append("line")
+                    .merge(chartLineSelection);
+
+                chartLineSelectionMerged.classed(Gantt.ChartLine.className, true);
+                chartLineSelectionMerged
+                    .attr("x1", (l: Line) => l.x1)
+                    .attr("y1", (l: Line) => l.y1)
+                    .attr("x2", (l: Line) => l.x2)
+                    .attr("y2", (l: Line) => l.y2)
+                    .style("stroke", this.colorHelper.getHighContrastColor("foreground", todayColor))
+                    .style("stroke-opacity", 1)
+                    .style("stroke-dasharray", "none")
+                    .style("display", "block");
+
+                chartLineSelection.exit().remove();
+            } else {
+                this.chartGroup
+                    .selectAll(Gantt.ChartLine.selectorName)
+                    .remove();
+            }
         }
     }
 
