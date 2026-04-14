@@ -923,58 +923,50 @@ export class Gantt implements IVisual {
         viewMode: powerbi.ViewMode,
         settingsState: SettingsState,
         keepSettingsOnFiltering: boolean): MilestoneData {
-        let milestonesIndex = -1;
-        for (const index in dataView.categorical.categories) {
-            const category = dataView.categorical.categories[index];
-            if (category.source.roles.Milestones) {
-                milestonesIndex = +index;
-            }
-        }
 
         const milestoneData: MilestoneData = {
             dataPoints: []
         };
-        const milestonesCategory = dataView.categorical.categories[milestonesIndex];
-        const milestones: { value: PrimitiveValue, index: number }[] = [];
+
         const shouldUseSettingsFromPersistProps: boolean = viewMode === powerbi.ViewMode.View || keepSettingsOnFiltering;
-
-        const cachedShapes: { [key: string]: MilestoneShape } = {};
-        const cachedColors: { [key: string]: string } = {};
         const allShapes = [MilestoneShape.Circle, MilestoneShape.Square, MilestoneShape.Rhombus];
+        let shapeIndex = 0;
 
-        let prevShapeIndex = -1;
-        if (milestonesCategory && milestonesCategory.values) {
-            milestonesCategory.values.forEach((value: PrimitiveValue, index: number) => milestones.push({ value, index }));
-            milestones.forEach((milestone) => {
-                const value = milestone.value as string;
-                const milestoneObjects = shouldUseSettingsFromPersistProps
-                    ? settingsState.getMilestoneSettings(value)
-                    : milestonesCategory.objects?.[milestone.index];
+        // Find all category columns assigned to the Milestones role (one per milestone type)
+        const milestoneCategories = dataView.categorical.categories.filter(c => c.source.roles && c.source.roles.Milestones);
 
-                const selectionBuilder: ISelectionIdBuilder = host
-                    .createSelectionIdBuilder()
-                    .withCategory(milestonesCategory, milestone.index);
+        for (const category of milestoneCategories) {
+            const columnName: string = category.source.displayName;
 
-                if (!cachedShapes[value]) {
-                    const savedShape = settingsState.getMilestoneSettings(value)?.milestones?.shapeType as (MilestoneShape | undefined);
-                    cachedShapes[value] = savedShape ?? allShapes[(prevShapeIndex + 1) % allShapes.length];
-                    prevShapeIndex++
-                }
-                if (!cachedColors[value]) {
-                    const savedColor = (settingsState.getMilestoneSettings(value)?.milestones as any)?.fill?.solid?.color;
-                    cachedColors[value] = savedColor ?? host.colorPalette.getColor(value).value;
-                }
-                const milestoneDataPoint: MilestoneDataPoint = {
-                    name: value,
-                    identity: selectionBuilder.createSelectionId(),
-                    shapeType: milestoneObjects?.milestones?.shapeType ?
-                        milestoneObjects.milestones.shapeType as string : cachedShapes[value],
-                    color: milestoneObjects?.milestones?.fill ?
-                        (milestoneObjects.milestones as any).fill.solid.color : cachedColors[value],
-                };
-                milestoneData.dataPoints.push(milestoneDataPoint);
-            });
+            // In edit mode read from per-row objects at index 0; in view/persist mode read from settingsState
+            const milestoneObjects = shouldUseSettingsFromPersistProps
+                ? settingsState.getMilestoneSettings(columnName)
+                : category.objects?.[0];
 
+            const selectionBuilder: ISelectionIdBuilder = host
+                .createSelectionIdBuilder()
+                .withCategory(category, 0);
+
+            // Determine shape: persisted → objects → auto-cycle
+            const savedShape = settingsState.getMilestoneSettings(columnName)?.milestones?.shapeType as (MilestoneShape | undefined);
+            const shape: MilestoneShape = milestoneObjects?.milestones?.shapeType
+                ? milestoneObjects.milestones.shapeType as MilestoneShape
+                : savedShape ?? allShapes[shapeIndex % allShapes.length];
+            shapeIndex++;
+
+            // Determine color: objects → settingsState → palette
+            const savedColor = (settingsState.getMilestoneSettings(columnName)?.milestones as any)?.fill?.solid?.color;
+            const color: string = milestoneObjects?.milestones?.fill
+                ? (milestoneObjects.milestones as any).fill.solid.color
+                : savedColor ?? host.colorPalette.getColor(columnName).value;
+
+            const milestoneDataPoint: MilestoneDataPoint = {
+                name: columnName,
+                identity: selectionBuilder.createSelectionId(),
+                shapeType: shape as string,
+                color,
+            };
+            milestoneData.dataPoints.push(milestoneDataPoint);
         }
 
         return milestoneData;
@@ -1058,7 +1050,7 @@ export class Gantt implements IVisual {
 
             const {
                 taskParentName,
-                milestone,
+                milestones,
                 startDate,
                 extraInformation,
                 highlight,
@@ -1073,7 +1065,7 @@ export class Gantt implements IVisual {
                     taskParentName,
                     addedParents,
                     collapsedTasks,
-                    milestone,
+                    milestones,
                     startDate,
                     highlight,
                     extraInformation,
@@ -1155,7 +1147,7 @@ export class Gantt implements IVisual {
                 });
                 if (task.Milestones) {
                     task.Milestones.forEach((milestone) => {
-                        const dateFormatted = formatters.startDateFormatter.format(task.start);
+                        const dateFormatted = formatters.startDateFormatter.format(milestone.start);
                         const dateTypesSettings = this.formattingSettings.dateType;
                         milestone.tooltipInfo = this.getTooltipForMilestoneLine(dateFormatted, dateTypesSettings, [milestone.type], [milestone.category]);
                     });
@@ -1183,7 +1175,6 @@ export class Gantt implements IVisual {
 
         const resource: string = String(values?.Resource?.[index] ?? "");
         const taskParentName: string | null = values?.Parent?.[index] != null ? String(values.Parent[index]) : null;
-        const milestoneType: string | null = (values.Milestones && !lodashIsEmpty(values.Milestones[index]) && values.Milestones[index]) || null;
 
         const startDate: Date = (values.StartDate && values.StartDate[index]
             && isValidDate(new Date(values.StartDate[index])) && new Date(values.StartDate[index]))
@@ -1191,13 +1182,32 @@ export class Gantt implements IVisual {
 
         const extraInformation: ExtraInformation[] = this.getExtraInformationFromValues(values, index);
 
+        // Build one Milestone per milestone date column that has a valid date for this row
+        const milestones: Milestone[] = [];
+        const taskName: string = String(categoryValue ?? "");
+        if (values.Milestones && typeof values.Milestones === "object" && !Array.isArray(values.Milestones)) {
+            const milestoneColumns = values.Milestones as { [colName: string]: PrimitiveValue[] };
+            for (const colName of Object.keys(milestoneColumns)) {
+                const rawDate = milestoneColumns[colName][index];
+                if (rawDate != null) {
+                    const milestoneDate = new Date(rawDate as any);
+                    if (isValidDate(milestoneDate)) {
+                        milestones.push({
+                            type: colName,
+                            start: milestoneDate,
+                            tooltipInfo: null,
+                            category: taskName
+                        });
+                    }
+                }
+            }
+        }
+
         let highlight: number | null = null;
         if (hasHighlights && categoricalValues) {
             const notNullIndex = categoricalValues.findIndex(value => value.highlights && value.values[index] != null);
             if (notNullIndex != -1) highlight = <number>categoricalValues[notNullIndex].highlights[index];
         }
-
-        const taskName: string = String(categoryValue ?? "");
 
         const task: Task = {
             color,
@@ -1220,16 +1230,11 @@ export class Gantt implements IVisual {
             daysOffList: [],
             wasDowngradeDurationUnit,
             stepDurationTransformation,
-            Milestones: milestoneType && startDate ? [{
-                type: milestoneType,
-                start: startDate,
-                tooltipInfo: null,
-                category: taskName
-            }] : [],
+            Milestones: milestones,
             highlight: highlight !== null
         };
 
-        return { taskParentName, milestone: milestoneType, startDate, extraInformation, highlight, task };
+        return { taskParentName, milestones, startDate, extraInformation, highlight, task };
     }
 
     private computeTaskGroupAttributes(
@@ -1340,7 +1345,7 @@ export class Gantt implements IVisual {
         taskParentName: string,
         addedParents: string[],
         collapsedTasks: string[],
-        milestone: string,
+        milestones: Milestone[],
         startDate: Date,
         highlight: number,
         extraInformation: ExtraInformation[],
@@ -1372,7 +1377,7 @@ export class Gantt implements IVisual {
                 wasDowngradeDurationUnit: null,
                 selected: null,
                 identity: selectionBuilder.createSelectionId(),
-                Milestones: milestone && startDate ? [{ type: milestone, start: startDate, tooltipInfo: null, category: String(categoryValue ?? "") }] : [],
+                Milestones: milestones || [],
                 highlight: highlight !== null
             };
 
@@ -3031,7 +3036,6 @@ export class Gantt implements IVisual {
         const taskIsCollapsed = this.collapsedTasks.includes(task.name);
 
         if (this.hasNotNullableDates &&
-            (taskIsCollapsed || lodashIsEmpty(task.Milestones)) &&
             (task.start != null && task.end != null)
         ) {
             return Gantt.taskDurationToWidth(task.start, task.end);
@@ -3471,7 +3475,7 @@ export class Gantt implements IVisual {
                 .attr("x", (task: Task) => this.getResourceLabelXCoordinate(task, taskResourceFontSize, taskResourcePosition))
                 .attr("y", (task: Task) => this.getTaskYCoordinateWithLayer(task, taskConfigHeight)
                     + Gantt.getResourceLabelYOffset(taskConfigHeight, taskResourceFontSize, taskResourcePosition))
-                .text((task: Task) => lodashIsEmpty(task.Milestones) && task.resource || "")
+                .text((task: Task) => task.resource || "")
                 .style("fill", (task: Task) =>
                     taskResourceSettings.matchLegendColors.value
                         ? this.colorHelper.getHighContrastColor("foreground", task.color)

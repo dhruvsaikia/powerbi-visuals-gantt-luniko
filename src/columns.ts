@@ -83,6 +83,11 @@ export class GanttColumns<T> {
                         } else {
                             columns[x.source.displayName] = x.values;
                         }
+                    } else if (i === GanttRole.Milestones && x.source.roles && x.source.roles[GanttRole.Milestones]) {
+                        if (!columns) {
+                            columns = {};
+                        }
+                        (columns as { [key: string]: PrimitiveValue[] })[x.source.displayName] = x.values;
                     } else {
                         columns = x.values;
                     }

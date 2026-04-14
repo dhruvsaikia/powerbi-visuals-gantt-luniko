@@ -22,15 +22,36 @@ The free Gantt visuals on AppSource don't meet the client's needs. The closest v
   - `pbiviz.json` — visual metadata (name, version, author)
 - **Output:** `.pbiviz` file (packaged visual imported into Power BI)
 
+## Completed Modifications
+
+### ✅ Milestone Vertical Lines Toggle
+- **Implemented:** Boolean "Show vertical lines" toggle in the Milestones formatting card (under the Line group).
+- **Behavior:** When off, the dotted vertical lines that span the full chart height are hidden. The "Today" line is unaffected.
+- **Files changed:** `src/settings/cards/milestonesCard.ts`, `src/gantt.ts`, `capabilities.json`
+- **Reference:** Based on PR #373 by `luizzappa`.
+
+### ✅ Multiple Milestone Date Columns
+- **Implemented:** The Milestones data role now accepts up to 10 date columns (was 1 string column).
+- **New behavior:**
+  - Drop any date columns (e.g., PDR Date, CDR Date, FAI Date) into the Milestones bucket
+  - Each column's date value determines where the milestone marker is drawn on that task's row
+  - Markers overlay on top of the task bar — bars do NOT disappear
+  - Each column name appears as a separate entry in the Milestones formatting card's "Apply settings to" dropdown, with independent color and shape controls
+  - Resource labels still show on tasks that have milestone markers
+- **Power BI note:** When dragging date columns into the Milestones bucket, Power BI may default to "Date Hierarchy". Right-click the field and select the raw date column, OR disable the global setting: File → Options → Current File → Data Load → uncheck "Auto date/time"
+- **Files changed:** `capabilities.json`, `src/columns.ts`, `src/gantt.ts`
+- **Key implementation details:**
+  - `capabilities.json`: Milestones max raised to 10 in all 4 dataViewMapping conditions
+  - `src/columns.ts` (`getCategoricalValues`): Milestones role now returns `{ "Col Name": Date[] }` dict (same pattern as ExtraInformation)
+  - `src/gantt.ts` (`createMilestones`): Iterates over all Milestones-role category columns; creates one `MilestoneDataPoint` per column using `withCategory(category, 0)` for the identity selector
+  - `src/gantt.ts` (`createTask`): Builds `Milestone[]` from the dict — one entry per column that has a valid date at that row index
+  - `src/gantt.ts` (`getTaskRectWidth`): Removed `lodashIsEmpty(task.Milestones)` guard so bars always render
+  - `src/gantt.ts` (`addTooltipInfoForCollapsedTasks`): Tooltip now uses `milestone.start` (actual milestone date) instead of `task.start`
+
 ## Planned Modifications (Priority Order)
 
-### 1. Milestone Vertical Lines Toggle (REFERENCE IMPLEMENTATION EXISTS)
-- **Problem:** When milestones are added, dotted vertical lines extend from each milestone diamond through the entire chart, making it unreadable with many milestones across 10+ programs.
-- **Solution:** Add a "Show vertical lines" boolean toggle under the Milestones section of the formatting pane.
-- **Reference:** PR #373 by user `luizzappa` (April 2025) implements this exact feature: +41 lines, -23 lines across 3 files. The PR has not been merged due to merge conflicts, but a working `.pbiviz` was produced and confirmed working by multiple users.
-- **GitHub issue:** #250 — "How can I add option to remove the grey dotted lines that come with milestones in the Power Bi Gantt 2.2.3"
-- **Earlier workaround by NeilGreenhorn-Proteus:** Changed milestone line color to `#00FFFFFF` (transparent) — hacky but functional.
-- **Note:** One user reported that luizzappa's version also hides the "Today" line — verify this doesn't happen and fix if needed.
+### 1. Milestone Vertical Dotted Lines — Further Refinement (if needed)
+- The toggle exists. Outstanding concern: with multiple milestone columns, each unique date still gets a full-height dotted line. Consider whether the user wants dotted lines per milestone column, or one line per unique date across all columns (current behavior).
 
 ### 2. Wider Task Label Area / Non-Truncated Labels
 - **Problem:** Task names are truncated ("Design Rev...", "Tooling Fa...") in the narrow left label area.
@@ -56,10 +77,12 @@ The free Gantt visuals on AppSource don't meet the client's needs. The closest v
 ## Key Context
 
 ### Milestones in This Domain
-- In aerospace project management, milestones are zero-duration events marking key dates: PDR Complete, FAI Complete, Type Certificate, Delivery, etc.
-- In Smartsheet, milestones have Start Date = End Date (zero duration).
-- In the Power BI Gantt visual, there is a "Milestones" field bucket. Tasks with zero duration render as diamond shapes.
-- The dotted vertical line problem occurs when data is placed in the Milestones field bucket.
+- In aerospace project management, milestones are key gate dates per task: PDR Complete, CDR Complete, FAI Complete, Type Certificate, Delivery, etc.
+- In Smartsheet, these are date columns on each task row (not zero-duration tasks).
+- In our custom visual, the Milestones bucket accepts **multiple date columns** (up to 10). Each column represents one milestone type. The date value in that column positions the marker on the timeline for that task row.
+- Milestone markers (diamond/square/circle) overlay on top of the task bar — the bar remains visible.
+- The dotted vertical lines that span the full chart height can be toggled off in the Milestones formatting card.
+- **Important:** Avoid the original Microsoft Gantt "milestone task" pattern (single string column, marker at task start). That design is superseded by the multi-column date approach above.
 
 ### Lingaro Visual (Inspiration, NOT a base)
 - GANTT by Lingaro is the visual the client previously used and liked.
@@ -89,6 +112,5 @@ pbiviz package           # Build .pbiviz file in dist/ folder
 
 ## Open Source Contribution Notes
 - Only Microsoft maintainers can merge PRs into the official repo.
-- PR #373 (milestone toggle) has been open since April 2025 with no Microsoft review.
-- Microsoft responded in May 2024 saying they would add milestone line formatting settings "in the next release" — this has not happened as of April 2026.
+- This fork diverges significantly from upstream (multi-column milestones, vertical line toggle) — it is not intended to be upstreamed.
 - For Luniko's purposes, this fork is an internal/organizational visual, not intended for AppSource submission.
