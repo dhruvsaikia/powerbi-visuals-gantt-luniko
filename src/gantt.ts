@@ -1938,6 +1938,17 @@ export class Gantt implements IVisual {
 
         axisLength = this.scaleAxisLength(axisLength);
 
+        // After TimeScale is set, compute per-task milestone stacking and re-index rows
+        if (this.formattingSettings.layout.stackedBars.value && this.hasNotNullableDates) {
+            // Stacked bars: height-aware lane re-packing for child tasks
+            this.updateStackedGroupMilestoneRows(groupedTasks);
+            this.reindexStackedGroups(groupedTasks);
+        } else if (!groupTasks && !this.formattingSettings.layout.stackedBars.value && this.hasNotNullableDates) {
+            // Normal mode: each task is its own row — grow tall when milestones stack
+            this.updateNormalModeMilestoneRows(groupedTasks);
+            this.reindexNormalModeGroups(groupedTasks);
+        }
+
         this.setDimension(groupedTasks, axisLength, settings);
 
         this.updateSvgBackgroundColor();
@@ -2100,10 +2111,11 @@ export class Gantt implements IVisual {
                 const maxLayer = Math.max(...group.tasks.map(t => t.layer ?? 0));
                 totalRows += maxLayer + 1;
             } else if (settings.layout.stackedBars.value) {
-                // Each stacked parent may span multiple lanes; leaf tasks span 1
-                totalRows += group.layers.size || 1;
+                // Use milestone-adjusted row count if computed, otherwise fall back to lane count
+                totalRows += group.milestoneRows ?? (group.layers.size || 1);
             } else {
-                totalRows++;
+                // Normal mode: milestoneRows is set when task bars grow to fit stacked milestones
+                totalRows += group.milestoneRows ?? 1;
             }
         });
 
@@ -2190,6 +2202,185 @@ export class Gantt implements IVisual {
         }
 
         return result;
+    }
+
+    /**
+     * Pass-2 of stacked-bars layout.  Must be called AFTER Gantt.TimeScale is set.
+     *
+     * For every group in stacked bars mode:
+     *  1. Compute task.milestoneSlots — how many vertical slots the task's milestone
+     *     markers need (using the same 20-px overlap rule as MilestonesRender).
+     *     A task with milestoneSlots = N will draw a bar N × barHeight tall.
+     *  2. Re-pack children with a height-aware greedy algorithm: a task of height h
+     *     must be placed in h consecutive available rows.
+     *  3. Rebuild group.layers with the new row assignments.
+     *  4. Set group.milestoneRows = total rows consumed by this group.
+     *
+     * Call reindexStackedGroups() afterwards to fix group.index / task.index.
+     */
+    private updateStackedGroupMilestoneRows(groupedTasks: GroupedTask[]): void {
+        const OVERLAP_THRESHOLD_PX = 20;
+
+        for (const group of groupedTasks) {
+            if (!group.layers || group.layers.size === 0) continue;
+
+            // Collect all child tasks from the pass-1 layers map
+            const allChildren: Task[] = [];
+            for (const [, tasks] of group.layers) {
+                allChildren.push(...tasks);
+            }
+            if (allChildren.length === 0) continue;
+
+            // ── Step 1: compute milestoneSlots per task ────────────────────────
+            for (const child of allChildren) {
+                if (!child.Milestones || child.Milestones.length === 0) {
+                    child.milestoneSlots = 1;
+                } else {
+                    const xPositions = child.Milestones.map(m => Gantt.TimeScale(m.start) as number);
+                    child.milestoneSlots = this.computeMilestoneMaxStack(xPositions, OVERLAP_THRESHOLD_PX);
+                }
+            }
+
+            // ── Step 2: height-aware greedy row packing ───────────────────────
+            // Sort by start time (same ordering as pass-1)
+            const sorted = [...allChildren].sort((a, b) => {
+                if (!a.start && !b.start) return 0;
+                if (!a.start) return 1;
+                if (!b.start) return -1;
+                return a.start.getTime() - b.start.getTime();
+            });
+
+            // rowEndTimes[r]: end Date of the last task occupying row r, or null if free
+            const rowEndTimes: (Date | null)[] = [];
+
+            for (const child of sorted) {
+                const h = child.milestoneSlots ?? 1;
+                const taskStart = child.start;
+
+                // Find the first sequence of h consecutive available rows
+                let assignedRow = -1;
+                for (let r = 0; r + h <= rowEndTimes.length && assignedRow === -1; r++) {
+                    let fits = true;
+                    for (let i = 0; i < h; i++) {
+                        const endTime = rowEndTimes[r + i];
+                        if (endTime !== null && taskStart && endTime > taskStart) {
+                            fits = false;
+                            break;
+                        }
+                    }
+                    if (fits) { assignedRow = r; }
+                }
+
+                if (assignedRow === -1) {
+                    // No gap found — extend the row array
+                    assignedRow = rowEndTimes.length;
+                }
+
+                // Allocate rows and mark them with this task's end time
+                const effectiveEnd = child.end || new Date(8640000000000000);
+                while (rowEndTimes.length < assignedRow + h) { rowEndTimes.push(null); }
+                for (let i = 0; i < h; i++) { rowEndTimes[assignedRow + i] = effectiveEnd; }
+
+                child.layer = assignedRow;
+                // task.index will be finalised in reindexStackedGroups
+            }
+
+            // ── Step 3: rebuild the layers map with updated row assignments ───
+            group.layers.clear();
+            for (const child of allChildren) {
+                const lane = child.layer ?? 0;
+                if (!group.layers.has(lane)) { group.layers.set(lane, []); }
+                group.layers.get(lane).push(child);
+            }
+
+            group.milestoneRows = rowEndTimes.length || 1;
+        }
+    }
+
+    /**
+     * After updateStackedGroupMilestoneRows re-packs lanes, the pass-1 group.index
+     * values are stale (groups may now span more rows).  This method walks all groups
+     * in order and assigns sequential indices so no two groups overlap in the SVG.
+     */
+    private reindexStackedGroups(groupedTasks: GroupedTask[]): void {
+        let currentIndex = 0;
+        for (const group of groupedTasks) {
+            group.index = currentIndex;
+            // Parent placeholder(s)
+            group.tasks.forEach(t => { t.index = currentIndex; });
+            // Child tasks: index = group start + their row
+            for (const [, tasks] of group.layers) {
+                for (const task of tasks) {
+                    task.index = currentIndex + (task.layer ?? 0);
+                }
+            }
+            const rowCount = group.milestoneRows ?? (group.layers.size || 1);
+            currentIndex += rowCount;
+        }
+    }
+
+    /**
+     * Normal mode (stacked bars OFF, group tasks OFF).
+     * Each group contains exactly one task in group.tasks and an empty layers map.
+     * Compute milestoneSlots for that task and store it as group.milestoneRows so
+     * setDimension allocates the right number of rows for the group.
+     * Must be called AFTER Gantt.TimeScale is established.
+     */
+    private updateNormalModeMilestoneRows(groupedTasks: GroupedTask[]): void {
+        const OVERLAP_THRESHOLD_PX = 20;
+
+        for (const group of groupedTasks) {
+            const task = group.tasks[0];
+            if (!task) continue;
+
+            if (!task.Milestones || task.Milestones.length === 0) {
+                task.milestoneSlots = 1;
+            } else {
+                const xPositions = task.Milestones.map(m => Gantt.TimeScale(m.start) as number);
+                task.milestoneSlots = this.computeMilestoneMaxStack(xPositions, OVERLAP_THRESHOLD_PX);
+            }
+
+            group.milestoneRows = task.milestoneSlots;
+        }
+    }
+
+    /**
+     * After updateNormalModeMilestoneRows assigns milestoneRows per group, re-index
+     * all groups sequentially so that a group with milestoneRows=3 advances the
+     * starting row of the next group by 3 instead of 1.
+     */
+    private reindexNormalModeGroups(groupedTasks: GroupedTask[]): void {
+        let currentIndex = 0;
+        for (const group of groupedTasks) {
+            group.index = currentIndex;
+            group.tasks.forEach(t => { t.index = currentIndex; });
+            currentIndex += group.milestoneRows ?? 1;
+        }
+    }
+
+    /**
+     * Given a list of x-pixel positions for milestone markers, return the number
+     * of vertical stack slots required so that no two markers in the same slot
+     * are within `threshold` pixels of each other.
+     */
+    private computeMilestoneMaxStack(xPositions: number[], threshold: number): number {
+        if (xPositions.length === 0) return 0;
+        const sorted = [...xPositions].sort((a, b) => a - b);
+        const slotLastX: number[] = [];
+        for (const x of sorted) {
+            let placed = false;
+            for (let i = 0; i < slotLastX.length; i++) {
+                if (Math.abs(x - slotLastX[i]) >= threshold) {
+                    slotLastX[i] = x;
+                    placed = true;
+                    break;
+                }
+            }
+            if (!placed) {
+                slotLastX.push(x);
+            }
+        }
+        return slotLastX.length || 1;
     }
 
     private getGroupTasks(tasks: Task[], groupTasks: boolean, collapsedTasks: string[], overlappingSettings: OverlappingTasks): GroupedTask[] {
@@ -2546,7 +2737,8 @@ export class Gantt implements IVisual {
                 return drawStandardMargin || isLastChild ? Gantt.DefaultValues.ParentTaskLeftMargin : Gantt.DefaultValues.ChildTaskLeftMargin;
             })
             .attr("y", (task: GroupedTask) => {
-                const groupHeight = ((task.layers.size || 1) - 1) * taskConfigHeight;
+                const effectiveRows = task.milestoneRows ?? (task.layers.size || 1);
+                const groupHeight = (effectiveRows - 1) * taskConfigHeight;
                 const res = (task.index + 1) * this.getResourceLabelTopMargin() + (taskConfigHeight - this.formattingSettings.taskLabels.taskLabelsGroup.general.fontSize.value) / 2 + groupHeight;
 
                 return res;
@@ -2696,8 +2888,9 @@ export class Gantt implements IVisual {
             })
             .attr("stroke-width", Gantt.AxisLabelStrokeWidth)
             .attr("y", (task: GroupedTask) => {
-                const groupHeight: number = taskConfigHeight * ((task.layers.size || 1) - 1);
-                return (task.index + (task.layers.size || 0) + 0.5) * this.getResourceLabelTopMargin() + groupHeight / 2;
+                const effectiveRows = task.milestoneRows ?? (task.layers.size || 1);
+                const groupHeight: number = taskConfigHeight * (effectiveRows - 1);
+                return (task.index + effectiveRows + 0.5) * this.getResourceLabelTopMargin() + groupHeight / 2;
             })
             .attr("fill", (task: GroupedTask) => {
                 const isChild: boolean = !!task.tasks[0].parent;
@@ -3121,16 +3314,18 @@ export class Gantt implements IVisual {
     private taskSelectionRectRender(taskGroupSelection: d3Selection<SVGGElement, GroupedTask, SVGGElement, null>, shouldRenderLines: boolean) {
         const taskLineSelection = taskGroupSelection
             .selectAll(".task-line")
-            .data((d: GroupedTask) => {
+            .data((d: GroupedTask, groupIdx: number) => {
                 if (d.layers && d.layers.size > 0) {
                     return Array.from(d.layers.entries()).map(([layerIndex, tasks]) => ({
                         index: layerIndex,
-                        tasks
+                        tasks,
+                        groupIndex: groupIdx
                     } as Layer));
                 }
                 return [{
                     index: 0,
-                    tasks: d.tasks
+                    tasks: d.tasks,
+                    groupIndex: groupIdx
                 }];
             })
             .join("g")
@@ -3148,12 +3343,21 @@ export class Gantt implements IVisual {
     }
 
     private renderGroupedTaskGridLines(taskLinesSelection: d3Selection<SVGGElement | BaseType, Layer, SVGGElement, GroupedTask>, shouldRenderLines: boolean) {
+        const stackedBars: boolean = this.formattingSettings.layout.stackedBars.value;
         const taskLineRectSelection = taskLinesSelection
             .selectAll(".task-rect")
-            .data((d: Layer) => d.index === 0 ? [] : [d])
+            .data((d: Layer) => {
+                if (stackedBars) {
+                    // In stacked mode: show a thin divider only at the boundary between parent groups
+                    // (first layer of each non-first group). No dividers within a group's child lanes.
+                    return (d.index === 0 && (d.groupIndex ?? 0) > 0) ? [d] : [];
+                }
+                // Normal / grouped-task mode: divider above every non-first layer within a group
+                return d.index === 0 ? [] : [d];
+            })
             .join("rect")
             .classed("task-rect", true)
-            .attr("height", shouldRenderLines ? 1 : 0)
+            .attr("height", stackedBars ? 1 : (shouldRenderLines ? 1 : 0))
             .attr("x", 0)
             .attr("y", (d: Layer) => {
                 const firstTask = d.tasks[0];
@@ -3194,7 +3398,7 @@ export class Gantt implements IVisual {
         const x = this.hasNotNullableDates ? Gantt.TimeScale(task.start) : 0,
             y = this.getTaskYCoordinateWithLayer(task, taskConfigHeight),
             width = this.getTaskRectWidth(task),
-            height = Gantt.getBarHeight(taskConfigHeight),
+            height = Gantt.getBarHeight(taskConfigHeight) * Math.max(1, task.milestoneSlots ?? 1),
             radius = Gantt.RectRound;
 
 
@@ -3322,6 +3526,9 @@ export class Gantt implements IVisual {
     private MilestonesRender(
         taskSelection: d3Selection<SVGGElement, Task, SVGGElement | BaseType, Layer>,
         taskConfigHeight: number): void {
+        const MILESTONE_OVERLAP_PX = 20;
+        const barHeight = Gantt.getBarHeight(taskConfigHeight);
+
         const taskMilestones = taskSelection
             .selectAll<SVGGElement, {
                 key: number;
@@ -3329,30 +3536,41 @@ export class Gantt implements IVisual {
                 task: Task;
             }>(Gantt.TaskMilestone.selectorName)
             .data((d: Task) => {
-                const nestedByDate: {
-                    key: string;
-                    values: Milestone[];
-                    value: undefined;
-                }[] = d3Nest<Milestone>().key((d: Milestone) => d.start.toDateString()).entries(d.Milestones);
+                // Sort milestones by their x (date) position so the greedy slot
+                // algorithm always evaluates left-to-right.
+                const sorted = [...d.Milestones].sort(
+                    (a, b) => Gantt.TimeScale(a.start) - Gantt.TimeScale(b.start)
+                );
 
-                const updatedMilestones: MilestonePath[] = nestedByDate.map((nestedObj) => {
-                    const oneDateMilestones: Milestone[] = nestedObj.values;
-                    // if there is 2 or more milestones for concrete date => draw only one milestone for concrete date, but with tooltip for all of them
-                    const currentMilestone = [...oneDateMilestones].pop();
-                    const allTooltipInfo = oneDateMilestones.map((milestone: MilestonePath) => milestone.tooltipInfo);
-                    currentMilestone.tooltipInfo = allTooltipInfo.reduce((a, b) => a.concat(b), []);
-
+                // Assign each milestone to the first vertical slot whose last-x
+                // is far enough away that the new marker won't overlap it.
+                const slotLastX: number[] = [];
+                const stackedMilestones: MilestonePath[] = sorted.map((m: Milestone) => {
+                    const x = Gantt.TimeScale(m.start) as number;
+                    let stackIndex = -1;
+                    for (let i = 0; i < slotLastX.length; i++) {
+                        if (Math.abs(x - slotLastX[i]) >= MILESTONE_OVERLAP_PX) {
+                            stackIndex = i;
+                            slotLastX[i] = x;
+                            break;
+                        }
+                    }
+                    if (stackIndex === -1) {
+                        stackIndex = slotLastX.length;
+                        slotLastX.push(x);
+                    }
                     return {
                         taskID: d.index,
-                        type: currentMilestone.type,
-                        start: currentMilestone.start,
-                        tooltipInfo: currentMilestone.tooltipInfo,
+                        type: m.type,
+                        start: m.start,
+                        tooltipInfo: m.tooltipInfo,
+                        stackIndex,
                     };
                 });
 
                 return [{
                     key: d.index,
-                    values: <MilestonePath[]>updatedMilestones,
+                    values: stackedMilestones,
                     task: d
                 }];
             });
@@ -3371,9 +3589,12 @@ export class Gantt implements IVisual {
 
         taskMilestonesMerged.classed(Gantt.TaskMilestone.className, true);
 
-        const transformForMilestone = (task: Task, start: Date) => {
+        const transformForMilestone = (task: Task, start: Date, stackIndex: number = 0) => {
             const yCoordinate = this.getTaskYCoordinateWithLayer(task, taskConfigHeight);
-            return SVGManipulations.translate(Gantt.TimeScale(start) - Gantt.getBarHeight(taskConfigHeight) / 4, yCoordinate);
+            return SVGManipulations.translate(
+                Gantt.TimeScale(start) - barHeight / 4,
+                yCoordinate + stackIndex * barHeight
+            );
         };
 
         const taskMilestonesSelection = taskMilestonesMerged.selectAll("path");
@@ -3395,7 +3616,7 @@ export class Gantt implements IVisual {
                 .attr("d", (data: MilestonePath) => this.getMilestonePath(data.type, taskConfigHeight))
                 .attr("transform", (data: MilestonePath, i: number, nodes: any[]) => {
                     const parentData = d3Select(nodes[i].parentNode).datum() as { task: Task };
-                    return transformForMilestone(parentData.task, data.start);
+                    return transformForMilestone(parentData.task, data.start, data.stackIndex ?? 0);
                 })
                 .attr("fill", (data: MilestonePath) => this.getMilestoneColor(data.type))
                 .attr("focusable", true)
@@ -3471,7 +3692,7 @@ export class Gantt implements IVisual {
             const drawTaskRectDaysOff = (task: TaskDaysOff & { parentTask: Task }) => {
                 const x = this.hasNotNullableDates ? Gantt.TimeScale(task.daysOff[0]) : 0;
                 const y: number = this.getTaskYCoordinateWithLayer(task.parentTask, taskConfigHeight),
-                    height: number = Gantt.getBarHeight(taskConfigHeight),
+                    height: number = Gantt.getBarHeight(taskConfigHeight) * Math.max(1, task.parentTask.milestoneSlots ?? 1),
                     radius: number = this.formattingSettings.general.barsRoundedCorners.value ? Gantt.RectRound : 0,
                     width: number = getTaskRectDaysOffWidth(task);
 
@@ -3916,8 +4137,8 @@ export class Gantt implements IVisual {
 
         const lastTaskGroup: GroupedTask = tasks[tasks.length - 1];
         const tasksTotal: number = lastTaskGroup.layers.size
-            ? lastTaskGroup.index + lastTaskGroup.layers.size
-            : tasks.length;
+            ? lastTaskGroup.index + (lastTaskGroup.milestoneRows ?? lastTaskGroup.layers.size)
+            : lastTaskGroup.index + (lastTaskGroup.milestoneRows ?? 1);
 
         const line: Line[] = [];
         milestoneDates.forEach((date: Date) => {

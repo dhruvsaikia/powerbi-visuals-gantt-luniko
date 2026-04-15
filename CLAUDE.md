@@ -16,8 +16,12 @@ The free Gantt visuals on AppSource don't meet the client's needs. The closest v
 - **Rendering:** D3.js (SVG)
 - **Build tool:** Power BI Visuals SDK (`pbiviz` CLI)
 - **Key files:**
-  - `src/gantt.ts` — main visual rendering logic
-  - `src/settings.ts` — formatting pane settings/properties
+  - `src/gantt.ts` — main visual rendering logic (~4 100 lines, the main file)
+  - `src/interfaces.ts` — TypeScript interfaces for Task, GroupedTask, Layer, Milestone, etc.
+  - `src/settings/cards/layoutCard.ts` — Layout formatting card (Stacked Bars toggle)
+  - `src/settings/cards/milestonesCard.ts` — Milestones formatting card
+  - `src/settings/ganttChartSettingsModels.ts` — top-level settings model, registers all cards
+  - `src/columns.ts` — maps Power BI dataView columns to typed values
   - `capabilities.json` — defines data field buckets and formatting options
   - `pbiviz.json` — visual metadata (name, version, author)
 - **Output:** `.pbiviz` file (packaged visual imported into Power BI)
@@ -74,36 +78,75 @@ The free Gantt visuals on AppSource don't meet the client's needs. The closest v
   - Resource/legend labels that normally appear to the right of bars are hidden for child tasks (they'd overlap adjacent bars)
   - Collapse/expand buttons are hidden (hierarchy is implicit in the stacked layout)
   - Milestone markers are collected from stacked children and still drawn
+  - A thin 1px divider line appears between parent groups (between Boeing and Qatar, etc.) but NOT between child lanes within the same parent — the parent group looks like one unified tall row
 - **Behavior when OFF:** identical to pre-existing behavior — no regressions
 - **Files changed:** `src/settings/cards/layoutCard.ts` (new file), `src/settings/ganttChartSettingsModels.ts`, `capabilities.json`, `src/gantt.ts`
 - **Key implementation details:**
   - `capabilities.json`: Added `layout` object with `stackedBars` bool property
   - `src/settings/ganttChartSettingsModels.ts`: Added `layout = new LayoutCardSettings()` and included in `cards[]`
-  - `src/gantt.ts` (`buildStackedGroupedTasks`): New method — filters top-level tasks, lane-packs children per parent, assigns `task.layer` and `task.index`, builds `GroupedTask.layers` map
+  - `src/gantt.ts` (`buildStackedGroupedTasks`): New method — filters top-level tasks, lane-packs children per parent using pass-1 greedy interval algorithm, assigns `task.layer` and `task.index`, builds `GroupedTask.layers` map
   - `src/gantt.ts` (`getGroupTasks`): Calls `buildStackedGroupedTasks` when toggle is ON; returns normal grouped tasks otherwise
-  - `src/gantt.ts` (`setDimension`): Counts `group.layers.size` rows instead of 1 per group when in stacked mode
-  - `src/gantt.ts` (`tasksAfterGrouping`): Uses `Array.from(t.layers.values()).flat()` when layers exist so real child dates are used for TimeScale/hasNotNullableDates calculation (critical bug fix — without this, parent placeholder tasks with null dates caused all bars to disappear)
+  - `src/gantt.ts` (`taskSelectionRectRender`): Passes `groupIdx` (D3 parent index) into each Layer object so divider logic knows which group a lane belongs to
+  - `src/gantt.ts` (`renderGroupedTaskGridLines`): In stacked mode, only draws a divider for layer index 0 of non-first groups (`d.index === 0 && d.groupIndex > 0`); inner lanes (index ≥ 1) get no divider; always 1px in stacked mode regardless of the `displayGroupedTaskGridLines` setting
+  - `src/gantt.ts` (`tasksAfterGrouping`): Uses `Array.from(t.layers.values()).flat()` when layers exist so real child dates are used for TimeScale/hasNotNullableDates calculation (critical — without this, parent placeholder tasks with null dates caused all bars to disappear)
   - `src/gantt.ts` (`renderStackedChildNames`): New method — D3 `.join("text")` to create/update/remove `.stacked-child-label` text elements inside each child task `<g>`; always called unconditionally from `renderTasks` so stale elements are cleaned up when toggling OFF
   - `src/gantt.ts` (`renderClickableAreas`): Hides collapse buttons and parent indentation when in stacked mode
   - `src/gantt.ts` (`taskResourceRender`): Data binding returns `[]` for child tasks when stacked mode is ON, causing D3 to remove their resource label elements
   - `src/gantt.ts` (`createMilestoneLine`): Collects milestone dates from stacked children in addition to top-level tasks
 - **Known architectural detail:** `GroupedTask.tasks` always holds the parent placeholder task (with `children` populated, `parent: null`) so that the left-panel label renders correctly with parent styling. The actual dated child tasks live exclusively in `GroupedTask.layers`.
 
+### ✅ Milestone Vertical Stacking (Both Modes)
+- **Problem:** When a task has multiple milestones whose dates fall within ~20px of each other horizontally (same date, or consecutive days at typical zoom), the markers were drawn on top of each other and only the topmost was visible.
+- **Fix:** Instead of collapsing same-date milestones into one marker, all milestones are now drawn separately and stacked vertically. A greedy slot-assignment algorithm assigns each milestone a `stackIndex` (0 = at bar top, 1 = one bar-height below, 2 = two bar-heights below, etc.).
+- **Algorithm (20px proximity rule):** Milestones sorted left-to-right by pixel x position. For each milestone, find the first slot where the previous milestone in that slot is ≥ 20px away (no visual overlap). If no slot fits, open a new one. The slot index becomes `stackIndex`. This runs both in `MilestonesRender` (for visual placement) and in `computeMilestoneMaxStack` (for row-height planning).
+- **Files changed:** `src/interfaces.ts`, `src/gantt.ts`
+- **Key implementation details:**
+  - `src/interfaces.ts`: Added `stackIndex?: number` to `MilestonePath`; added `milestoneSlots?: number` to `Task`; added `milestoneRows?: number` to `GroupedTask`; added `groupIndex?: number` to `Layer`
+  - `src/gantt.ts` (`MilestonesRender`): Replaced `d3Nest` date-grouping (which hid all but one marker per date) with the slot-assignment algorithm; each `MilestonePath` now carries its `stackIndex`
+  - `src/gantt.ts` (`transformForMilestone`): y-offset = `getTaskYCoordinateWithLayer(task) + stackIndex * barHeight`, so each stack level sits one bar-height below the previous
+  - `src/gantt.ts` (`computeMilestoneMaxStack`): New private helper — given a sorted list of x-pixel positions, returns the number of vertical slots needed (= max simultaneous overlaps at any horizontal point). Used by both stacked-bars and normal-mode layout planning.
+
+### ✅ Milestone-Aware Tall Bars — Stacked Bars Mode
+- **Problem:** In stacked bars mode, when a child task had 3 milestones stacking vertically, the milestones spilled downward out of the bar and overlapped the next child's bar in the adjacent lane.
+- **Fix:** The bar itself grows to `milestoneSlots × barHeight` tall, and the lane-packing algorithm treats tall bars as occupying multiple consecutive row slots, preventing other bars from being packed underneath.
+- **Two-pass layout architecture:**
+  - **Pass 1** (`buildStackedGroupedTasks`, called before TimeScale exists): Time-based greedy interval packing. Assigns each child to a lane (1 slot each). Sets initial `task.layer` and `task.index`.
+  - **Pass 2** (`updateStackedGroupMilestoneRows`, called after TimeScale is set): Computes `task.milestoneSlots` for each child using pixel-based overlap detection. Re-runs a height-aware greedy packing: a child of height h searches for h consecutive available row slots. Rebuilds `group.layers` map with updated assignments. Sets `group.milestoneRows`.
+  - **Re-indexing** (`reindexStackedGroups`): After pass-2, each group's start row may have shifted (a group that now needs 4 rows instead of 2 pushes the next group's start down). This method walks all groups in order and assigns sequential `group.index` and `task.index` values.
+- **Files changed:** `src/gantt.ts`
+- **Key implementation details:**
+  - `src/gantt.ts` (`updateStackedGroupMilestoneRows`): Per-group: collects all children, computes `milestoneSlots` per child, re-packs using height-aware greedy algorithm (tries h consecutive rows, falls back to appending new rows), rebuilds `group.layers`, sets `group.milestoneRows = rowEndTimes.length`
+  - `src/gantt.ts` (`reindexStackedGroups`): Assigns sequential `group.index` and updates `task.index = group.index + task.layer` for all children; also resets parent placeholder index to `group.index`
+  - `src/gantt.ts` (`drawTaskRect`): Height is now `Gantt.getBarHeight(taskConfigHeight) * Math.max(1, task.milestoneSlots ?? 1)` — bar grows for multi-slot tasks
+  - `src/gantt.ts` (`taskDaysOffRender`): Days-off stripes also use effective bar height so they fill the full tall bar
+  - `src/gantt.ts` (`setDimension`): Stacked-bars branch uses `group.milestoneRows ?? (group.layers.size || 1)` instead of just `layers.size`
+  - `src/gantt.ts` (`renderTaskLabels`, `renderClickableAreas`): Both used `task.layers.size` for computing the group height for label/divider positioning; changed to `task.milestoneRows ?? (task.layers.size || 1)`. After re-packing, `layers` is a sparse map (keys could be 0, 3 rather than 0, 1, 2, 3) so `layers.size` no longer equals total rows
+  - `src/gantt.ts` (update flow, line ~1941): Calls `updateStackedGroupMilestoneRows` then `reindexStackedGroups` after TimeScale is set, before `setDimension`
+
+### ✅ Milestone-Aware Tall Bars — Normal Mode
+- **Problem:** In normal mode (stacked bars OFF, group tasks OFF), when a task had multiple close milestones, they stacked vertically using `stackIndex` offsets but spilled out of the fixed-height row into the adjacent task's row below.
+- **Fix:** Applied the same milestone slot computation to normal mode. A task with `milestoneSlots=3` now has a bar 3× the normal height and its row is 3× taller, pushing all subsequent tasks down accordingly.
+- **Files changed:** `src/gantt.ts`
+- **Key implementation details:**
+  - `src/gantt.ts` (`updateNormalModeMilestoneRows`): New method — for each group (each group = one task in normal mode), computes `task.milestoneSlots` from pixel x positions and sets `group.milestoneRows = task.milestoneSlots`
+  - `src/gantt.ts` (`reindexNormalModeGroups`): New method — walks groups in order, assigns sequential `group.index` and `task.index`, advancing by `milestoneRows` per group instead of always 1
+  - `src/gantt.ts` (update flow): Calls `updateNormalModeMilestoneRows` + `reindexNormalModeGroups` when `!stackedBars && !groupTasks && hasNotNullableDates` (after TimeScale, before `setDimension`)
+  - `src/gantt.ts` (`setDimension`): Normal-mode branch changed from `totalRows++` to `totalRows += group.milestoneRows ?? 1`
+  - `src/gantt.ts` (`createMilestoneLine`): Fixed `tasksTotal` for normal mode — was `tasks.length` (group count, no longer equals row count when tasks grow), now `lastTaskGroup.index + (lastTaskGroup.milestoneRows ?? 1)` so dotted lines extend to the full chart height
+  - `drawTaskRect` and `taskDaysOffRender` already use `task.milestoneSlots` so they work automatically once it's populated
+
 ## Planned Modifications (Priority Order)
 
-### 1. Milestone Vertical Dotted Lines — Further Refinement (if needed)
-- The toggle exists. Outstanding concern: with multiple milestone columns, each unique date still gets a full-height dotted line. Consider whether the user wants dotted lines per milestone column, or one line per unique date across all columns (current behavior).
-
-### 2. Wider Task Label Area / Non-Truncated Labels
+### 1. Wider Task Label Area / Non-Truncated Labels
 - **Problem:** Task names are truncated ("Design Rev...", "Tooling Fa...") in the narrow left label area.
 - **Goal:** Make the label column wider or auto-sizing so full task names are visible, similar to how Lingaro displays full task names in a table-like left panel.
 
-### 3. Extra Columns (Data Grid on Left Side)
+### 2. Extra Columns (Data Grid on Left Side)
 - **Problem:** Microsoft Gantt only shows the task name on the left. Lingaro supports an "Extra Columns" field bucket to show additional data columns (e.g., status, owner, dates) next to task names before the timeline starts.
 - **Goal:** Add an "Extra Columns" data role in `capabilities.json` and render additional columns in the left panel area.
 - **Complexity:** Medium-high — requires modifying data binding, SVG layout, and formatting options.
 
-### 4. Status-Based Bar Coloring
+### 3. Status-Based Bar Coloring
 - **Problem:** Microsoft Gantt colors bars by a Legend category field. Lingaro supports computed status coloring: Milestone, Completed, On Track, Slightly Behind, Behind, Overdue, Future Task — each with a different color.
 - **Goal:** Support conditional bar coloring based on task status relative to dates.
 - **Approach options:**
@@ -111,9 +154,12 @@ The free Gantt visuals on AppSource don't meet the client's needs. The closest v
   - Code-based: Build status logic into the visual itself. More work but cleaner UX.
 - **Recommendation:** Start with the DAX approach (no visual code changes needed), then consider code-based if the DAX approach is insufficient.
 
-### 5. Hierarchical View Improvements
+### 4. Hierarchical View Improvements
 - **Goal:** Cleaner collapse/expand icons, timeline rollup when programs are collapsed (showing aggregated bars at the program level), support for 3 hierarchy levels (Portfolio → Program → Task).
 - **Reference:** Lingaro supports "Roll up the timeline when aggregating items (i.e., into projects, programs, and portfolios) in the hierarchical view."
+
+### 5. Milestone Vertical Dotted Lines — Further Refinement (if needed)
+- The toggle exists. Outstanding concern: with multiple milestone columns, each unique date still gets a full-height dotted line. Consider whether the user wants dotted lines per milestone column, or one line per unique date across all columns (current behavior).
 
 ## Key Context
 
@@ -122,8 +168,24 @@ The free Gantt visuals on AppSource don't meet the client's needs. The closest v
 - In Smartsheet, these are date columns on each task row (not zero-duration tasks).
 - In our custom visual, the Milestones bucket accepts **multiple date columns** (up to 10). Each column represents one milestone type. The date value in that column positions the marker on the timeline for that task row.
 - Milestone markers (diamond/square/circle) overlay on top of the task bar — the bar remains visible.
+- When multiple milestones are within ~20px of each other horizontally, they stack vertically inside the bar. The bar and its row grow tall enough to contain all stacked milestones. This works in both normal mode and stacked bars mode.
 - The dotted vertical lines that span the full chart height can be toggled off in the Milestones formatting card.
 - **Important:** Avoid the original Microsoft Gantt "milestone task" pattern (single string column, marker at task start). That design is superseded by the multi-column date approach above.
+
+### Stacked Bars Mode — Architecture Summary
+For new sessions: the stacked bars layout is a significant departure from the standard rendering. Key things to know:
+- `GroupedTask.tasks` = array containing the **parent placeholder task** (no dates, has `children`). Used for left-panel label rendering only.
+- `GroupedTask.layers` = Map of `laneIndex → Task[]` containing the **actual dated child tasks**. This is what gets rendered as bars.
+- Layout runs in **two passes**: pass-1 (time-based, `buildStackedGroupedTasks`) before TimeScale exists; pass-2 (pixel-based milestone stacking, `updateStackedGroupMilestoneRows`) after TimeScale is set. `reindexStackedGroups` re-numbers rows sequentially after pass-2 changes group sizes.
+- `task.milestoneSlots` (set in pass-2) = number of vertical stack slots this task's milestones need = the bar's height multiplier.
+- `group.milestoneRows` = total rows this group occupies in the SVG = used by `setDimension`, `renderTaskLabels`, `renderClickableAreas`, and `createMilestoneLine`.
+- `group.layers` after pass-2 is **sparse**: keys are the actual row offsets (e.g., {0: [A], 3: [B]} for a 4-row group where A is 3 rows tall). Do NOT use `group.layers.size` for row counts — use `group.milestoneRows`.
+
+### Normal Mode — Architecture Summary
+- Each task is its own `GroupedTask` with `group.tasks = [task]` and `group.layers = new Map()` (empty).
+- After TimeScale: `updateNormalModeMilestoneRows` computes `task.milestoneSlots` and `group.milestoneRows` for each group. `reindexNormalModeGroups` reassigns sequential indices so tall tasks push subsequent tasks down.
+- `setDimension` uses `group.milestoneRows ?? 1` (not a hardcoded `++`).
+- `drawTaskRect` uses `task.milestoneSlots` for bar height in both modes — no mode-specific logic needed there.
 
 ### Lingaro Visual (Inspiration, NOT a base)
 - GANTT by Lingaro is the visual the client previously used and liked.

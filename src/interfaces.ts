@@ -83,11 +83,13 @@ export interface Task extends SelectableDataPoint {
     highlight?: boolean;
     Milestones?: Milestone[];
     layer?: number;
+    milestoneSlots?: number;
 }
 
 export interface Layer {
     index: number;
     tasks: Task[];
+    groupIndex?: number;
 }
 
 export interface GroupedTask {
@@ -95,6 +97,7 @@ export interface GroupedTask {
     name: string;
     tasks: Task[];
     layers: Map<number, Task[]>;
+    milestoneRows?: number;
 }
 
 export interface GanttChartFormatters {
@@ -167,6 +170,7 @@ export interface Milestone {
 
 export interface MilestonePath extends Milestone {
     taskID: number;
+    stackIndex?: number;
 }
 
 export interface MilestoneDataPoint {
