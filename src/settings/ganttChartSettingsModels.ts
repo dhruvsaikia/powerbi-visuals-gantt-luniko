@@ -20,6 +20,7 @@ import { TaskResourceCardSettings, TaskResourcePropertyIdentifier } from "./card
 import { SubTasksCardSettings } from "./cards/task/subTasksCard";
 import { DateTypeCardSettings } from "./cards/dateTypeCard";
 import { BackgroundCardSettings } from "./cards/backgroundCard";
+import { LayoutCardSettings } from "./cards/layoutCard";
 
 import { GanttViewModel, MilestoneDataPoint } from "../interfaces";
 import { Gantt } from "../gantt";
@@ -40,6 +41,7 @@ export class GanttChartSettingsModel extends Model {
     dateType = new DateTypeCardSettings();
     background = new BackgroundCardSettings();
     subtasks = new SubTasksCardSettings();
+    layout = new LayoutCardSettings();
 
     cards = [
         this.general,
@@ -55,6 +57,7 @@ export class GanttChartSettingsModel extends Model {
         this.taskResource,
         this.dateType,
         this.background,
+        this.layout,
     ];
 
     public populateDynamicDataPoints(viewModel: GanttViewModel, localizationManager: ILocalizationManager, colorHelper: ColorHelper): void {

@@ -65,6 +65,30 @@ The free Gantt visuals on AppSource don't meet the client's needs. The closest v
 - **Fix:** Changed to `Milestones: []` — parent rows are always created with an empty milestone list.
 - **Files changed:** `src/gantt.ts` (`addTaskToParentTask`, line ~1385)
 
+### ✅ Stacked Bars Mode
+- **Implemented:** "Stacked Bars" toggle in a new **Layout** formatting card (`src/settings/cards/layoutCard.ts`). When ON, child tasks render as lanes inside their parent row instead of as separate rows below.
+- **Behavior when ON:**
+  - Child tasks are packed into horizontal lanes using a greedy interval-graph algorithm (non-overlapping tasks share a lane; overlapping tasks go to separate lanes)
+  - Parent row expands vertically to accommodate all lanes
+  - Each child bar displays its task name as centered, dark (`#222`) text inside the bar, truncated to fit
+  - Resource/legend labels that normally appear to the right of bars are hidden for child tasks (they'd overlap adjacent bars)
+  - Collapse/expand buttons are hidden (hierarchy is implicit in the stacked layout)
+  - Milestone markers are collected from stacked children and still drawn
+- **Behavior when OFF:** identical to pre-existing behavior — no regressions
+- **Files changed:** `src/settings/cards/layoutCard.ts` (new file), `src/settings/ganttChartSettingsModels.ts`, `capabilities.json`, `src/gantt.ts`
+- **Key implementation details:**
+  - `capabilities.json`: Added `layout` object with `stackedBars` bool property
+  - `src/settings/ganttChartSettingsModels.ts`: Added `layout = new LayoutCardSettings()` and included in `cards[]`
+  - `src/gantt.ts` (`buildStackedGroupedTasks`): New method — filters top-level tasks, lane-packs children per parent, assigns `task.layer` and `task.index`, builds `GroupedTask.layers` map
+  - `src/gantt.ts` (`getGroupTasks`): Calls `buildStackedGroupedTasks` when toggle is ON; returns normal grouped tasks otherwise
+  - `src/gantt.ts` (`setDimension`): Counts `group.layers.size` rows instead of 1 per group when in stacked mode
+  - `src/gantt.ts` (`tasksAfterGrouping`): Uses `Array.from(t.layers.values()).flat()` when layers exist so real child dates are used for TimeScale/hasNotNullableDates calculation (critical bug fix — without this, parent placeholder tasks with null dates caused all bars to disappear)
+  - `src/gantt.ts` (`renderStackedChildNames`): New method — D3 `.join("text")` to create/update/remove `.stacked-child-label` text elements inside each child task `<g>`; always called unconditionally from `renderTasks` so stale elements are cleaned up when toggling OFF
+  - `src/gantt.ts` (`renderClickableAreas`): Hides collapse buttons and parent indentation when in stacked mode
+  - `src/gantt.ts` (`taskResourceRender`): Data binding returns `[]` for child tasks when stacked mode is ON, causing D3 to remove their resource label elements
+  - `src/gantt.ts` (`createMilestoneLine`): Collects milestone dates from stacked children in addition to top-level tasks
+- **Known architectural detail:** `GroupedTask.tasks` always holds the parent placeholder task (with `children` populated, `parent: null`) so that the left-panel label renders correctly with parent styling. The actual dated child tasks live exclusively in `GroupedTask.layers`.
+
 ## Planned Modifications (Priority Order)
 
 ### 1. Milestone Vertical Dotted Lines — Further Refinement (if needed)

@@ -1898,7 +1898,12 @@ export class Gantt implements IVisual {
         this.updateCommonTasks(groupedTasks);
         this.updateCommonMilestones(groupedTasks);
 
-        const tasksAfterGrouping: Task[] = groupedTasks.flatMap(t => t.tasks);
+        // In stacked bars mode the GroupedTask.tasks holds a null-dated parent placeholder;
+        // the actual dated child tasks live in the layers map. Use layers when available so
+        // that the date domain is computed from real task dates rather than null values.
+        const tasksAfterGrouping: Task[] = groupedTasks.flatMap(t =>
+            t.layers.size > 0 ? Array.from(t.layers.values()).flat() : t.tasks
+        );
         const minDateTask: Task = lodashMinBy(tasksAfterGrouping, (t) => t && t.start);
         const maxDateTask: Task = lodashMaxBy(tasksAfterGrouping, (t) => t && t.end);
         this.hasNotNullableDates = !!minDateTask && !!maxDateTask;
@@ -2094,6 +2099,9 @@ export class Gantt implements IVisual {
             if (settings.general.groupTasks.value) {
                 const maxLayer = Math.max(...group.tasks.map(t => t.layer ?? 0));
                 totalRows += maxLayer + 1;
+            } else if (settings.layout.stackedBars.value) {
+                // Each stacked parent may span multiple lanes; leaf tasks span 1
+                totalRows += group.layers.size || 1;
             } else {
                 totalRows++;
             }
@@ -2116,7 +2124,77 @@ export class Gantt implements IVisual {
             .attr("width", width);
     }
 
+    /**
+     * Builds GroupedTask[] for Stacked Bars mode.
+     * Parent rows expand vertically to fit all child bars in lanes; non-overlapping
+     * children share a lane, overlapping children are placed in separate lanes.
+     * Leaf tasks (no children) render as normal single-row entries.
+     */
+    private buildStackedGroupedTasks(tasks: Task[]): GroupedTask[] {
+        const result: GroupedTask[] = [];
+        let currentIndex = 0;
+
+        const sortByStart = (a: Task, b: Task): number => {
+            if (!a.start && !b.start) return 0;
+            if (!a.start) return 1;
+            if (!b.start) return -1;
+            return a.start.getTime() - b.start.getTime();
+        };
+
+        // Only top-level rows (no parent) are rendered as GroupedTask rows
+        const topLevelTasks = tasks.filter(t => !t.parent);
+
+        for (const task of topLevelTasks) {
+            const children: Task[] = task.children ? [...task.children].sort(sortByStart) : [];
+            const layers = new Map<number, Task[]>();
+
+            if (children.length === 0) {
+                // Leaf task: single-lane row, renders as a normal bar
+                task.index = currentIndex;
+                task.layer = 0;
+                layers.set(0, [task]);
+                result.push({ name: task.name, index: currentIndex, tasks: [task], layers } as GroupedTask);
+                currentIndex++;
+            } else {
+                // Parent task: lane-pack children and expand row height accordingly
+                task.index = currentIndex;
+
+                // Interval-graph greedy lane packing
+                const layerEndTimes: Date[] = [];
+                for (const child of children) {
+                    let assignedLane = -1;
+                    for (let li = 0; li < layerEndTimes.length; li++) {
+                        if (!child.start || child.start >= layerEndTimes[li]) {
+                            assignedLane = li;
+                            layerEndTimes[li] = child.end || new Date(0);
+                            break;
+                        }
+                    }
+                    if (assignedLane === -1) {
+                        assignedLane = layerEndTimes.length;
+                        layerEndTimes.push(child.end || new Date(0));
+                    }
+                    child.layer = assignedLane;
+                }
+
+                const numLanes = layerEndTimes.length;
+                for (let lane = 0; lane < numLanes; lane++) {
+                    const laneTasks = children.filter(c => (c.layer ?? 0) === lane);
+                    laneTasks.forEach(c => { c.index = currentIndex + lane; });
+                    layers.set(lane, laneTasks);
+                }
+
+                result.push({ name: task.name, index: currentIndex, tasks: [task], layers } as GroupedTask);
+                currentIndex += numLanes;
+            }
+        }
+
+        return result;
+    }
+
     private getGroupTasks(tasks: Task[], groupTasks: boolean, collapsedTasks: string[], overlappingSettings: OverlappingTasks): GroupedTask[] {
+        const stackedBars: boolean = this.formattingSettings.layout.stackedBars.value;
+
         if (groupTasks) {
             const groupedTasks: lodashDictionary<Task[]> = lodashGroupBy(tasks,
                 x => (x.parent ? `${x.parent}.${x.name}` : x.name));
@@ -2207,6 +2285,10 @@ export class Gantt implements IVisual {
             }
 
             return result;
+        }
+
+        if (stackedBars) {
+            return this.buildStackedGroupedTasks(tasks);
         }
 
         return tasks.map(x => ({
@@ -2438,7 +2520,8 @@ export class Gantt implements IVisual {
                 return SVGManipulations.translate(0, this.margin.top + this.getTaskLabelCoordinateY(task.index));
             });
 
-        this.renderClickableAreas(axisLabelGroup, width, taskConfigHeight);
+        const stackedBars: boolean = this.formattingSettings.layout.stackedBars.value;
+        this.renderClickableAreas(axisLabelGroup, width, taskConfigHeight, stackedBars);
 
         let parentTask: string = "";
         let childrenCount = 0;
@@ -2551,7 +2634,7 @@ export class Gantt implements IVisual {
         });
     }
 
-    private renderClickableAreas(axisLabelGroup: d3Selection<SVGGElement, GroupedTask, any, any>, width: number, taskConfigHeight: number) {
+    private renderClickableAreas(axisLabelGroup: d3Selection<SVGGElement, GroupedTask, any, any>, width: number, taskConfigHeight: number, stackedBars: boolean = false) {
         const clickableArea = axisLabelGroup
             .append("g")
             .classed(Gantt.ClickableArea.className, true)
@@ -2566,7 +2649,7 @@ export class Gantt implements IVisual {
             .attr("x", (task: GroupedTask) => (Gantt.TaskLineCoordinateX +
                 (task.tasks.every((task: Task) => !!task.parent)
                     ? Gantt.SubtasksLeftMargin
-                    : (task.tasks[0].children && !!task.tasks[0].children.length) ? this.parentLabelOffset : 0)))
+                    : (!stackedBars && task.tasks[0].children && !!task.tasks[0].children.length) ? this.parentLabelOffset : 0)))
             .attr("class", (task: GroupedTask) => task.tasks[0].children ? "parent" : task.tasks[0].parent ? "child" : "normal-node")
             .style("font-weight", (task: GroupedTask) => {
                 const isParent = !!task.tasks[0].children;
@@ -2634,8 +2717,10 @@ export class Gantt implements IVisual {
             .append("title")
             .text((task: GroupedTask) => task.name);
 
+        // In stacked bars mode the children live inside the parent row as lanes,
+        // so the collapse/expand button is not applicable and should be hidden.
         const buttonSelection = clickableArea
-            .filter((task: GroupedTask) => task.tasks[0].children && !!task.tasks[0].children.length)
+            .filter((task: GroupedTask) => !stackedBars && task.tasks[0].children && !!task.tasks[0].children.length)
             .append("svg")
             .attr("viewBox", "0 0 32 32")
             .attr("width", Gantt.DefaultValues.IconWidth)
@@ -2655,7 +2740,7 @@ export class Gantt implements IVisual {
             .attr("x", Gantt.DefaultValues.BarMargin)
             .attr("fill", "transparent");
 
-        clickableArea.classed("pointerCursor", (task: GroupedTask) => task.tasks[0].children && !!task.tasks[0].children.length);
+        clickableArea.classed("pointerCursor", (task: GroupedTask) => !stackedBars && task.tasks[0].children && !!task.tasks[0].children.length);
 
         const buttonPlusMinusColor = this.colorHelper.getHighContrastColor("foreground", Gantt.DefaultValues.PlusMinusColor);
         buttonSelection
@@ -2890,6 +2975,52 @@ export class Gantt implements IVisual {
     }
 
     /**
+     * Render task name labels drawn directly on bars for Stacked Bars mode.
+     * Only tasks that are children (have a parent) are labelled this way.
+     */
+    private renderStackedChildNames(
+        taskSelection: d3Selection<SVGGElement, Task, SVGGElement | BaseType, Layer>,
+        taskConfigHeight: number
+    ): void {
+        const stackedBars: boolean = this.formattingSettings.layout.stackedBars.value;
+        const barHeight: number = Gantt.getBarHeight(taskConfigHeight);
+        // Keep font size comfortably inside the bar, clamped between 9 and 13 px
+        const fontSize: number = Math.max(9, Math.min(13, barHeight * 0.42));
+
+        taskSelection
+            .selectAll<SVGTextElement, Task>(".stacked-child-label")
+            // Bind data only in stacked mode for child tasks; empty array removes stale elements
+            .data((task: Task) => stackedBars && task.parent ? [task] : [])
+            .join("text")
+            .classed("stacked-child-label", true)
+            .attr("x", (task: Task) => {
+                if (!this.hasNotNullableDates) { return 4; }
+                const barWidth: number = this.getTaskRectWidth(task);
+                return Gantt.TimeScale(task.start) + barWidth / 2;
+            })
+            .attr("text-anchor", "middle")
+            .attr("y", (task: Task) => {
+                const y: number = this.getTaskYCoordinateWithLayer(task, taskConfigHeight);
+                return y + barHeight / 2 + fontSize / 3;
+            })
+            .text((task: Task) => {
+                if (!this.hasNotNullableDates) { return task.name; }
+                const barWidth: number = this.getTaskRectWidth(task);
+                if (barWidth < 16) { return ""; }
+                const textProps: TextProperties = {
+                    fontFamily: "wf_segoe-ui_normal",
+                    fontSize: PixelConverter.toString(fontSize),
+                    text: task.name,
+                };
+                return textMeasurementService.getTailoredTextOrDefault(textProps, barWidth - 8);
+            })
+            .style("font-size", PixelConverter.toString(fontSize))
+            .style("fill", "#222")
+            .style("pointer-events", "none")
+            .style("user-select", "none");
+    }
+
+    /**
      * Render tasks
      * @param groupedTasks Grouped tasks
      */
@@ -2919,6 +3050,9 @@ export class Gantt implements IVisual {
         this.taskProgressRender(taskSelection);
         this.taskDaysOffRender(taskSelection, taskConfigHeight);
         this.taskResourceRender(taskSelection, taskConfigHeight, objects);
+
+        // Always call so stale labels are removed when switching modes off
+        this.renderStackedChildNames(taskSelection, taskConfigHeight);
 
         this.renderTooltip(taskSelection);
     }
@@ -3465,9 +3599,10 @@ export class Gantt implements IVisual {
             .remove();
 
         if (isResourcesFilled && taskResourceShow) {
+            const stackedBars: boolean = this.formattingSettings.layout.stackedBars.value;
             const taskResource = taskSelection
                 .selectAll<SVGTextElement, Task>(Gantt.TaskResource.selectorName)
-                .data((d: Task) => [d]);
+                .data((d: Task) => (stackedBars && d.parent) ? [] : [d]);
 
             const taskResourceMerged = taskResource
                 .enter()
@@ -3756,16 +3891,25 @@ export class Gantt implements IVisual {
 
         const dateTypeSettings: DateTypeCardSettings = this.formattingSettings.dateType;
         const todayColor: string = dateTypeSettings.todayColor.value.value;
+        const stackedBars: boolean = this.formattingSettings.layout.stackedBars.value;
         const milestoneDates = [new Date(timestamp)];
-        tasks.forEach((task: GroupedTask) => {
-            const subtasks: Task[] = task.tasks;
-            subtasks.forEach((task: Task) => {
-                if (!lodashIsEmpty(task.Milestones)) {
-                    task.Milestones.forEach((milestone) => {
-                        if (!milestoneDates.includes(milestone.start)) {
-                            milestoneDates.push(milestone.start);
-                        }
-                    });
+
+        const collectMilestoneDates = (task: Task) => {
+            if (!lodashIsEmpty(task.Milestones)) {
+                task.Milestones.forEach((milestone) => {
+                    if (!milestoneDates.includes(milestone.start)) {
+                        milestoneDates.push(milestone.start);
+                    }
+                });
+            }
+        };
+
+        tasks.forEach((group: GroupedTask) => {
+            group.tasks.forEach((task: Task) => {
+                collectMilestoneDates(task);
+                // In stacked bars mode the parent task holds children; collect their milestones too
+                if (stackedBars && task.children) {
+                    task.children.forEach(collectMilestoneDates);
                 }
             });
         });

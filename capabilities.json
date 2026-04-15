@@ -1007,6 +1007,17 @@
                     }
                 }
             }
+        },
+        "layout": {
+            "displayName": "Layout",
+            "properties": {
+                "stackedBars": {
+                    "displayName": "Stacked Bars",
+                    "type": {
+                        "bool": true
+                    }
+                }
+            }
         }
     },
     "sorting": {
