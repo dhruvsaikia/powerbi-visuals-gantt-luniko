@@ -1,18 +1,18 @@
 {
   "visual": {
     "name": "Gantt",
-    "displayName": "Gantt 3.4.5.0",
-    "guid": "Gantt1448688115699",
+    "displayName": "Gantt Chart by Luniko",
+    "guid": "lunikoGanttChart20250415",
     "visualClassName": "Gantt",
     "version": "3.4.5.0",
-    "description": "A Gantt chart is a type of bar chart which illustrates a project timeline or schedule. The Gantt Chart visual shows the Tasks, Start Dates, Durations, % Complete, and Resources for a project. The Gantt Chart visual can be used to show current schedule status using percent-complete shadings and a vertical \"TODAY\" line. The Legend may be used to group or filter tasks based upon data values.",
+    "description": "A customized Gantt chart visual by Luniko Consulting, built for aerospace PMO project tracking. Supports multiple milestone date columns, stacked bars mode, per-milestone color/shape formatting, and milestone vertical stacking.",
     "supportUrl": "https://community.powerbi.com",
-    "gitHubUrl": "https://github.com/Microsoft/powerbi-visuals-gantt"
+    "gitHubUrl": "https://github.com/dhruvsaikia/powerbi-visuals-gantt-luniko"
   },
   "apiVersion": "5.11.0",
   "author": {
-    "name": "Microsoft",
-    "email": "pbicvsupport@microsoft.com"
+    "name": "Luniko Consulting",
+    "email": "dhruvsaikia@gmail.com"
   },
   "assets": {
     "icon": "assets/icon.png"

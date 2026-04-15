@@ -28,6 +28,19 @@ The free Gantt visuals on AppSource don't meet the client's needs. The closest v
 
 ## Completed Modifications
 
+### ✅ Unique Visual Identity (Fork Separation from Microsoft Original)
+- **Problem:** Our fork shared the same GUID (`Gantt1448688115699`) and package name as Microsoft's original Gantt visual. When Power BI restarted, it fell back to the Microsoft version and showed "too many columns in Milestones bucket" errors.
+- **Fix:** Updated `pbiviz.json` to give the fork a unique identity:
+  - `guid`: `Gantt1448688115699` → `lunikoGanttChart20250415`
+  - `displayName`: `"Gantt 3.4.5.0"` → `"Gantt Chart by Luniko"`
+  - `description`: Updated to describe the Luniko fork and its custom features
+  - `author.name/email`: Updated to Luniko Consulting / dhruvsaikia@gmail.com
+  - `gitHubUrl`: Updated to the fork repo URL
+- **GUID scope:** The GUID only appears in `pbiviz.json` — no references exist in `src/`, `capabilities.json`, or any other file.
+- **Assets:** Custom `assets/icon.png` and `assets/thumbnail.png` have been replaced with Luniko-branded versions.
+- **Files changed:** `pbiviz.json`, `assets/icon.png`, `assets/thumbnail.png`
+- **Important:** When importing into Power BI, this visual now registers as a separate entry from Microsoft's Gantt. Both can coexist in the same Power BI environment. The `.pbiviz` in `dist/` is the file to import.
+
 ### ✅ Milestone Vertical Lines Toggle
 - **Implemented:** Boolean "Show vertical lines" toggle in the Milestones formatting card (under the Line group).
 - **Behavior:** When off, the dotted vertical lines that span the full chart height are hidden. The "Today" line is unaffected.
