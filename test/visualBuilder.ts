@@ -42,7 +42,7 @@ interface TaskMockParamsInterface {
 
 export class VisualBuilder extends VisualBuilderBase<VisualClass> {
     constructor(width: number, height: number) {
-        super(width, height, "Gantt1448688115699");
+        super(width, height, "lunikoGanttChart20250415");
     }
 
     protected build(options: VisualConstructorOptions) {
