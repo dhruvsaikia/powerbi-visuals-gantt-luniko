@@ -382,6 +382,10 @@ export class Gantt implements IVisual {
     private sortingOptions: SortingOptions;
     private settingsService: SettingsService;
 
+    private zoomFactor: number = 1;
+    private _lastOptions: VisualUpdateOptions = null;
+    private _pendingZoomAnchor: { cursorDate: Date; mouseXInChart: number } = null;
+
     constructor(options: VisualConstructorOptions) {
         this.init(options);
     }
@@ -506,6 +510,31 @@ export class Gantt implements IVisual {
                 this.collapseAllGroup.attr("transform", SVGManipulations.translate(scrollLeft, scrollTop));
             }
         }, false);
+
+        this.ganttDiv.node().addEventListener("wheel", (event: WheelEvent) => {
+            if (!event.ctrlKey || !this._lastOptions || !Gantt.TimeScale) {
+                return;
+            }
+            event.preventDefault();
+            event.stopPropagation();
+
+            const taskLabelSetting = this.formattingSettings.taskLabels;
+            const taskLabelShow: boolean = taskLabelSetting.show.value;
+            const taskLabelsWidth: number = taskLabelShow
+                ? taskLabelSetting.taskLabelsGroup.general.width.value
+                : 0;
+
+            const ganttDivEl = this.ganttDiv.node();
+            const mouseXInChart = event.clientX - ganttDivEl.getBoundingClientRect().left
+                - (taskLabelsWidth + this.margin.left + Gantt.SubtasksLeftMargin);
+            const cursorDate = Gantt.TimeScale.invert(mouseXInChart + ganttDivEl.scrollLeft);
+
+            const delta = event.deltaY < 0 ? 1.15 : 1 / 1.15;
+            this.zoomFactor = Math.min(8, Math.max(0.25, this.zoomFactor * delta));
+            this._pendingZoomAnchor = { cursorDate, mouseXInChart };
+
+            this.updateInternal(this._lastOptions);
+        }, { passive: false });
     }
 
     private handleTaskLabelResize() {
@@ -1803,6 +1832,7 @@ export class Gantt implements IVisual {
     * @param options The visual option that contains the dataView and the viewport
     */
     public update(options: VisualUpdateOptions): void {
+        this._lastOptions = options;
         try {
             if (!options || !options.dataViews || !options.dataViews[0]) {
                 this.clearViewport();
@@ -1923,6 +1953,7 @@ export class Gantt implements IVisual {
 
             axisLength = ticks * Gantt.DefaultTicksLength;
             axisLength = this.scaleAxisLength(axisLength);
+            axisLength *= this.zoomFactor;
 
             const viewportIn: IViewport = {
                 height: this.viewport.height,
@@ -1957,7 +1988,12 @@ export class Gantt implements IVisual {
         this.updateElementsPositions(this.margin);
         this.createMilestoneLine(groupedTasks);
 
-        if (this.formattingSettings.general.scrollToCurrentTime.value && this.hasNotNullableDates) {
+        if (this._pendingZoomAnchor !== null) {
+            const anchor = this._pendingZoomAnchor;
+            this._pendingZoomAnchor = null;
+            const newX = Gantt.TimeScale(anchor.cursorDate);
+            this.ganttDiv.node().scrollLeft = newX - anchor.mouseXInChart;
+        } else if (this.formattingSettings.general.scrollToCurrentTime.value && this.hasNotNullableDates) {
             this.scrollToMilestoneLine(axisLength);
         }
 
