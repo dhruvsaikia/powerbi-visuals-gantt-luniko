@@ -182,35 +182,63 @@ The free Gantt visuals on AppSource don't meet the client's needs. The closest v
     }
     ```
 
-### ✅ Milestone Marker Tooltips
-- **Problem:** Hovering a milestone marker showed the task-bar's tooltip (Task / Start Date / Resource) instead of milestone-specific info (`PDR Date: 2026-03-15`, `Task: Design Review`).
-- **Root cause:** SVG hit-test / render-order issue — not a listener problem. When a milestone marker overlapped its task bar, sibling paint order meant the task-bar's overlay chain caught the pointer first and the task's tooltip won. Markers rendered outside any bar already worked correctly.
-- **Why this was hard to debug:** Earlier rounds ruled out the obvious suspects (missing listeners, null-identity tooltip binding, broad overlay occluders like `axis-background` and `chart-line`). The empirical proof of the render-order diagnosis was moving a milestone date so its marker rendered outside the task bar — the milestone tooltip fired correctly there, which isolated the problem to on-bar hit-testing specifically and pointed at paint order rather than any listener or event-capture issue.
-- **Fix — four coordinated changes in `src/gantt.ts`:**
-  1. **Milestone-specific tooltip content** in `addTooltipInfoForCollapsedTasks` (line ~1182):
-     ```ts
-     milestone.tooltipInfo = [
-         { displayName: milestone.type, value: dateFormatted },
-         { displayName: "Task", value: task.name }
-     ];
-     ```
-  2. **Render order in `renderTasks`** (line ~3279–3283): `MilestonesRender` now runs AFTER `taskMainRectRender`, `taskProgressRender`, and `taskDaysOffRender`. Later siblings paint on top and receive pointer events first.
-  3. **`taskMilestonesMerged.raise()`** in `MilestonesRender` (line ~3629), right after the `.classed(...)` call. Explicitly moves the `<g class="task-milestone">` to the end of its parent's children every update cycle, so milestones stay on top even when D3 reuses existing nodes rather than appending.
-  4. **Direct tooltip binding on milestone paths with `null` identity** (line ~3667) plus three stopPropagation handlers:
-     ```ts
-     this.tooltipServiceWrapper.addTooltip(
-         taskMilestonesSelectionMerged,
-         (data: MilestonePath) => data.tooltipInfo,
-         null
-     );
-     taskMilestonesSelectionMerged
-         .on("pointerover.stopmilestone", (event: PointerEvent) => event.stopPropagation())
-         .on("pointerout.stopmilestone", (event: PointerEvent) => event.stopPropagation())
-         .on("pointermove.stopmilestone", (event: PointerEvent) => event.stopPropagation());
-     ```
-     `null` third arg avoids `identities: [undefined]` since `MilestonePath` doesn't extend `SelectableDataPoint`. The namespaced stopPropagation handlers prevent an event on a marker from bubbling to the `<g class="task">` and re-triggering the task-bar tooltip.
-- **Files changed:** `src/gantt.ts`
-- **Dead-end note:** Earlier attempts via broad `pointer-events: none` on `ganttSvgBackground`, `axisBackground`, and `<line class="chart-line">`, plus an invisible hit-area overlay idea, were reverted — the decisive fix was render order + `raise()`. Future sessions should not re-chase these for on-bar hit-test issues; check paint order first.
+## ✅ Resolved Debugging Session — Milestone Marker Tooltips (resolved 2026-04-20)
+
+### Goal
+When hovering a milestone marker (diamond/circle/square inside `<g class="task-milestone">`), show milestone-specific tooltip content such as `FAI Date: 2025-02-23` and `Task: Design Review`, instead of the task bar tooltip.
+
+### Final root cause
+This was primarily an **SVG render-order / hit-testing issue**, not a Power BI tooltip-service issue.
+
+- The milestone tooltip content itself was already correct once `milestone.tooltipInfo` was set in `addTooltipInfoForCollapsedTasks`.
+- The milestone path tooltip wiring in `MilestonesRender` was also basically correct once it used `tooltipServiceWrapper.addTooltip(..., null)` and `pointerover/pointermove/pointerout` stopPropagation handlers.
+- The real problem was that the milestone group was being rendered too early relative to the bar overlays (`taskProgressRender`, `taskDaysOffRender`). When the milestone sat **on top of the bar**, the bar layer won hit-testing, so the parent task tooltip showed.
+- When a milestone was moved **outside** the bar for testing, the milestone tooltip worked immediately. That was the key proof that the issue was layering, not tooltip content.
+
+### Final working fix
+The minimal working fix in `src/gantt.ts` was:
+
+1. Keep milestone-specific tooltip content:
+   ```ts
+   milestone.tooltipInfo = [
+       { displayName: milestone.type, value: dateFormatted },
+       { displayName: "Task", value: task.name }
+   ];
+   ```
+2. In `renderTasks`, move `MilestonesRender(taskSelection, taskConfigHeight)` to run **after** `taskProgressRender(...)` and `taskDaysOffRender(...)`.
+3. In `MilestonesRender`, call:
+   ```ts
+   taskMilestonesMerged.raise();
+   ```
+   so the milestone group is explicitly brought to the front even on update passes where D3 reuses existing DOM nodes.
+
+### Important implementation note
+`taskMilestonesMerged.raise()` mattered because simply changing call order is not always enough once nodes already exist. D3 `merge()` reuses DOM nodes, and `raise()` guarantees the `<g class="task-milestone">` container becomes the last child in its parent `<g class="task">`, so milestone paths win hit-testing over the bar overlays.
+
+### What was tried but not needed in the final fix
+- Temporary debug `console.log` / native `pointerover` listeners
+- Extra invisible milestone hit-area rects
+- Broad `pointer-events: none` changes on unrelated background / line elements
+
+Those experiments were useful for diagnosis but are **not part of the final minimal fix**.
+
+### How to validate
+- Package the visual with `pbiviz package`
+- Re-import into Power BI Desktop
+- Hover a milestone marker that overlaps a task bar
+- Expected: the milestone tooltip shows milestone info, not task-bar info
+
+No Power BI Service publish / F12 debugging is required for normal validation once this fix is in place.
+
+### Environment facts
+- User is on Windows, Power BI Desktop installed via Microsoft Store (MSIX), running in WebView2.
+- Successful validation happened in Power BI Desktop after packaging and re-importing the visual.
+
+### Session working rules (established by user this session)
+- **No `git commit`, `git add`, or `git push`** without explicit approval.
+- **No new branches.**
+- **No `pbiviz package` until explicitly asked** (`go run pbiviz package`).
+- **Show diffs and wait for approval** after each logical chunk.
 
 ## Planned Modifications (Priority Order)
 
@@ -282,8 +310,6 @@ The aerospace client has Smartsheet data structured as:
 - Import the custom `.pbiviz` via Visualizations pane → "..." → "Import a visual from a file."
 - Enable Developer Mode: File → Options → Report Settings → Developer Mode (resets each session).
 - For live development: `pbiviz start` launches a dev server at https://localhost:8080 and the "Developer Visual" in Power BI auto-refreshes on save.
-- **Environment:** On Windows, Power BI Desktop installed via Microsoft Store (MSIX) runs inside WebView2. This matters for DevTools attach and for any WebView2-specific rendering quirks.
-- **DevTools on Power BI Service:** Open DevTools on the report tab and attach to the frame titled `visual-sandbox (cvSandboxPack.cshtml)` — that's where the visual's code runs. `document.querySelectorAll(...)` or `elementsFromPoint(x, y)` from the top frame will not hit the visual's DOM; make sure you're in the sandbox iframe context.
 
 ## Build & Package Commands
 ```bash
@@ -296,9 +322,3 @@ pbiviz package           # Build .pbiviz file in dist/ folder
 - Only Microsoft maintainers can merge PRs into the official repo.
 - This fork diverges significantly from upstream (multi-column milestones, vertical line toggle) — it is not intended to be upstreamed.
 - For Luniko's purposes, this fork is an internal/organizational visual, not intended for AppSource submission.
-
-## Session working rules (established by user this session)
-- **No `git commit`, `git add`, or `git push`** without explicit approval.
-- **No new branches.**
-- **No `pbiviz package` until explicitly asked** (`go run pbiviz package`).
-- **Show diffs and wait for approval** after each logical chunk.

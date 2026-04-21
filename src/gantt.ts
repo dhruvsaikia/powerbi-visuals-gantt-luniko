@@ -1182,8 +1182,10 @@ export class Gantt implements IVisual {
                 if (task.Milestones) {
                     task.Milestones.forEach((milestone) => {
                         const dateFormatted = formatters.startDateFormatter.format(milestone.start);
-                        const dateTypesSettings = this.formattingSettings.dateType;
-                        milestone.tooltipInfo = this.getTooltipForMilestoneLine(dateFormatted, dateTypesSettings, [milestone.type], [milestone.category]);
+                        milestone.tooltipInfo = [
+                            { displayName: milestone.type, value: dateFormatted },
+                            { displayName: "Task", value: task.name }
+                        ];
                     });
                 }
             }
@@ -3275,9 +3277,9 @@ export class Gantt implements IVisual {
 
         const taskSelection = this.taskSelectionRectRender(taskGroupSelectionMerged, shouldRenderLines);
         this.taskMainRectRender(taskSelection, taskConfigHeight, generalBarsRoundedCorners, this.formattingSettings.taskConfig);
-        this.MilestonesRender(taskSelection, taskConfigHeight);
         this.taskProgressRender(taskSelection);
         this.taskDaysOffRender(taskSelection, taskConfigHeight);
+        this.MilestonesRender(taskSelection, taskConfigHeight);
         this.taskResourceRender(taskSelection, taskConfigHeight, objects);
 
         // Always call so stale labels are removed when switching modes off
@@ -3624,6 +3626,7 @@ export class Gantt implements IVisual {
             .merge(taskMilestones);
 
         taskMilestonesMerged.classed(Gantt.TaskMilestone.className, true);
+        taskMilestonesMerged.raise();
 
         const transformForMilestone = (task: Task, start: Date, stackIndex: number = 0) => {
             const yCoordinate = this.getTaskYCoordinateWithLayer(task, taskConfigHeight);
@@ -3661,7 +3664,15 @@ export class Gantt implements IVisual {
                 .attr("aria-label", (data: MilestonePath) => data.type);
         }
 
-        this.renderTooltip(taskMilestonesSelectionMerged);
+        this.tooltipServiceWrapper.addTooltip(
+            taskMilestonesSelectionMerged,
+            (data: MilestonePath) => data.tooltipInfo,
+            null
+        );
+        taskMilestonesSelectionMerged
+            .on("pointerover.stopmilestone", (event: PointerEvent) => event.stopPropagation())
+            .on("pointerout.stopmilestone", (event: PointerEvent) => event.stopPropagation())
+            .on("pointermove.stopmilestone", (event: PointerEvent) => event.stopPropagation());
     }
 
     /**

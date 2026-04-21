@@ -1,7 +1,8 @@
 {
   "permissions": {
     "allow": [
-      "Bash(find D:\\\\Github\\\\powerbi-visuals-gantt-luniko\\\\src:*)"
+      "Bash(find D:\\\\Github\\\\powerbi-visuals-gantt-luniko\\\\src:*)",
+      "Bash(node -e ' *)"
     ]
   }
 }
